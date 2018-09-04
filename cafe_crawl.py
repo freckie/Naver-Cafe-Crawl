@@ -134,10 +134,10 @@ def get_post_ids(club_id, keyword, pages):
     return post_ids
 
 
-def get_post_info(cafe_url, club_id, post_code, blacklist=None):
+def get_post_info(cafe_url, club_id, post_id, blacklist=None):
     result = dict()
     url = 'https://cafe.naver.com/ArticleRead.nhn?clubid={0}&page=10&userDisplay=50&inCafeSearch=true&searchBy=1&query=vs&includeAll=&exclude=&include=&exact=&searchdate=all&media=0&sortBy=date&articleid={1}&referrerAllArticles=true'.format(
-        club_id, str(post_code))
+        club_id, str(post_id))
     try:
         html = requests.get(url, headers=headers).text
         bs = BeautifulSoup(html, 'lxml')
@@ -165,11 +165,11 @@ def get_post_info(cafe_url, club_id, post_code, blacklist=None):
     result['time'] = temp2[1].find('td', class_='date').get_text().strip()
 
     # 글 내용
-    result['url'] = cafe_url + '/' + str(post_code)
+    result['url'] = cafe_url + '/' + str(post_id)
     result['content'] = bs.find('div', class_='tbody m-tcol-c').get_text().replace('\xa0', '').strip()
 
     # 댓글 수집
-    result['comments'] = get_comments([result['url']])
+    result['comments'] = get_comments([result['url'], club_id, post_id])
 
     # 기타 수집용 정보
     result['timestamp'] = str(_get_now_time())
@@ -178,81 +178,72 @@ def get_post_info(cafe_url, club_id, post_code, blacklist=None):
     return result
 
 
-def get_comments(url_list):
+def get_comments(url, club_id, post_id):
     all_comment = []
-    for url in url_list:
-        url_dict = dict()
-        url_dict['url'] = url
+    url_dict = dict()
+    url_dict['url'] = url
 
-        driver.get(url)
-        driver.implicitly_wait(3)
+    # Make Json URL
+    try:
+        article_attr = 'search.clubid={0}&search.menuid=26&search.articleid={1}&search.lastpageview=true&lcs=Y'.format(club_id, post_id)
+        json_chk_url = 'https://cafe.naver.com/CommentView.nhn?' + article_attr
 
-        # Make Json URL
+        temp_data = requests.get(json_chk_url).text
+
         try:
+            comment_data = json.loads(temp_data)
+            url_chk = 0
+        except:
+            driver.get(json_chk_url)
             bs4 = BeautifulSoup(driver.page_source, 'lxml')
-            article_temp = bs4.find('iframe', id='cafe_main').get('src')
-            article_temp = article_temp.split('?')
-            article_attr = article_temp[1]
-            article_attr = article_attr.replace('articleid', 'search.articleid')
-            article_attr = article_attr.replace('clubid', 'search.clubid')
-            json_chk_url = 'https://cafe.naver.com/CommentView.nhn?' + article_attr
+            comment_data = json.loads(bs4.get_text())
+            url_chk = 1
 
-            temp_data = requests.get(json_chk_url).text
+        # Count comment pages
+        total = comment_data['result']['totalCount']
+        cnt_per_page = comment_data['result']['countPerPage']
+        page_count = total / cnt_per_page
+        if total % cnt_per_page != 0:
+            page_count += 1
+        page_count = int(page_count)
 
-            try:
-                comment_data = json.loads(temp_data)
-                url_chk = 0
-            except:
-                driver.get(json_chk_url)
-                bs4 = BeautifulSoup(driver.page_source, 'lxml')
-                comment_data = json.loads(bs4.get_text())
-                url_chk = 1
+        json_url_list = []
+        for num in range(1, page_count + 1):
+            json_url_list.append(
+                'https://cafe.naver.com/CommentView.nhn?search.page={}&'.format(num) + article_attr)
 
-            # Count comment pages
-            total = comment_data['result']['totalCount']
-            cnt_per_page = comment_data['result']['countPerPage']
-            page_count = total / cnt_per_page
-            if total % cnt_per_page != 0:
-                page_count += 1
-            page_count = int(page_count)
+    except UnexpectedAlertPresentException:
+        alert = driver.switch_to.alert()
+        logger.info("[PASS] ({}) {}".format(url.strip(), alert.text))
+        alert.accept()
+        driver.implicitly_wait(3)
+        return list()
 
-            json_url_list = []
-            for num in range(1, page_count + 1):
-                json_url_list.append(
-                    'https://cafe.naver.com/CommentView.nhn?search.page={}&'.format(num) + article_attr)
+    # Get comment
+    comment_list = []
+    for json_url in json_url_list:
+        comment_data = {}
+        if url_chk == 0:
+            temp_data = requests.get(json_url).text
+            comment_data = json.loads(temp_data)
+        elif url_chk == 1:
+            driver.get(json_url)
+            bs4 = BeautifulSoup(driver.page_source, 'lxml')
+            comment_data = json.loads(bs4.get_text())
 
-        except UnexpectedAlertPresentException:
-            alert = driver.switch_to.alert()
-            logger.info("[PASS] ({}) {}".format(url.strip(), alert.text))
-            alert.accept()
-            driver.implicitly_wait(3)
-            return None
+        for comment in comment_data['result']['list']:
+            temp_comment = {}
+            if comment['deleted']:
+                continue
+            if comment['articleWriter']:
+                continue
+            temp_comment['author_id'] = comment['writerid'] + '@naver.com'
+            temp_comment['time'] = comment['writedt']
+            temp_comment['comment'] = comment['content']
+            comment_list.append(temp_comment)
 
-        # Get comment
-        comment_list = []
-        for json_url in json_url_list:
-            comment_data = {}
-            if url_chk == 0:
-                temp_data = requests.get(json_url).text
-                comment_data = json.loads(temp_data)
-            elif url_chk == 1:
-                driver.get(json_url)
-                bs4 = BeautifulSoup(driver.page_source, 'lxml')
-                comment_data = json.loads(bs4.get_text())
-
-            for comment in comment_data['result']['list']:
-                temp_comment = {}
-                if comment['deleted']:
-                    continue
-                if comment['articleWriter']:
-                    continue
-                temp_comment['author_id'] = comment['writerid'] + '@naver.com'
-                temp_comment['time'] = comment['writedt']
-                temp_comment['comment'] = comment['content']
-                comment_list.append(temp_comment)
-
-        url_dict['comments'] = comment_list
-        all_comment.append(url_dict)
+    url_dict['comments'] = comment_list
+    all_comment.append(url_dict)
     return all_comment
 
 
@@ -271,12 +262,12 @@ if __name__ == '__main__':
     streamHandler.setFormatter(formatter)
     logger.addHandler(streamHandler)
 
-    input_data.append({'excel_name': '',
-                       'url': '',
-                       'id': '',
-                       'pw': '',
-                       'keywords': ['', ''],
-                       'blacklist': ['']})
+    input_data.append({'excel_name': 'playbattlegrounds',
+                       'url': 'https://cafe.naver.com/playbattlegrounds',
+                       'id': 'rlaaudgu2',
+                       'pw': 'kimh1785*',
+                       'keywords': ['vss', '콜옵'],
+                       'blacklist': ['mb_sundo']})
 
     # Main loop
     for data in input_data:
