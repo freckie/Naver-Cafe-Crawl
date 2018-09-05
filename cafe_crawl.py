@@ -20,6 +20,49 @@ input_data = list()
 driver = webdriver.Chrome(driver_loc)
 
 
+def load_setting():
+    path_dir = './setting'
+    file_list = os.listdir(path_dir)
+    file_list.sort()
+
+    for iter in file_list:
+        file_name = '{0}/{1}'.format(path_dir, iter)
+        with open(file_name, 'r') as f:
+            temp_dict = {'keywords': list(), 'blacklist': list()}
+
+            lines = f.readlines()
+            now = 'url'
+            for line in lines:
+                if line[0] == '#':
+                    if 'url' in line.strip():
+                        now = 'url'
+                    elif 'id / pw' in line.strip():
+                        now = 'account'
+                    elif 'keyword' in line.strip():
+                        now = 'keyword'
+                    elif 'blacklist' in line.strip():
+                        now = 'blacklist'
+                    elif 'excel' in line.strip():
+                        now = 'excel'
+                else:
+                    if now == 'url':
+                        temp_dict['url'] = line.strip()
+                    elif now == 'account':
+                        temp_dict['id'] = line.split(' ')[0].strip()
+                        temp_dict['pw'] = line.split(' ')[1].strip()
+                    elif now == 'keyword':
+                        temp_dict['keywords'].append(line.strip())
+                    elif now == 'blacklist':
+                        temp_dict['blacklist'].append(line.strip())
+                    elif now == 'excel':
+                        temp_dict['excel_name'] = line.strip()
+            input_data.append(temp_dict)
+
+
+
+
+
+
 def _get_now_time():
     now = time.localtime()
     s = "{0}.{1:0>2}.{2:0>2}. {3:0>2}:{4:0>2}:{5:0>2}".format(now.tm_year, now.tm_mon, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec)
@@ -27,7 +70,7 @@ def _get_now_time():
 
 
 def make_excel(data, file_name):
-    FILENAME = './result' + file_name + ".xlsx"
+    FILENAME = './result/' + file_name + ".xlsx"
     wb = Workbook()
     ws = wb.worksheets[0]
     header = ['작성자', '댓글', '카테고리명', '제목명', '내용', '게시글 URL', '작성 시각', '수집 시각']
@@ -42,11 +85,13 @@ def make_excel(data, file_name):
     ws.append(header)
 
     for iter in data:
+        if iter['ok'] == 'error':
+            continue
         author = '{0}({1})'.format(iter['nickname'], iter['author_id'])
         if len(iter['comments']) == 0:
-            has_comment = '없음'
+            has_comment = '0개'
         else:
-            has_comment = '있음'
+            has_comment = '{}개'.format(iter['comment_counts'])
         temp_list = [author, has_comment, iter['category'], iter['title'], iter['content'], iter['url'], iter['time'], iter['timestamp']]
         ws.append(temp_list)
 
@@ -114,7 +159,7 @@ def get_page_len(club_id, keyword, count=1):
     return page_len
 
 
-def get_post_ids(club_id, keyword, pages):
+def get_post_ids(club_id, keyword, pages, history_ids=list()):
     post_ids = list()
 
     for page in range(1, pages + 1):
@@ -129,53 +174,13 @@ def get_post_ids(club_id, keyword, pages):
 
         trs = bs.find('form', {'name': 'ArticleList'}).find('table').find_all('tr', {'align': 'center'})
         for tr in trs:
-            post_ids.append(tr.find('span', class_='list-count').get_text())
+            post_id = tr.find('span', class_='list-count').get_text()
+            if post_id in history_ids:
+                continue
+            else:
+                post_ids.append(post_id)
 
     return post_ids
-
-
-def get_post_info(cafe_url, club_id, post_id, blacklist=None):
-    result = dict()
-    url = 'https://cafe.naver.com/ArticleRead.nhn?clubid={0}&page=10&userDisplay=50&inCafeSearch=true&searchBy=1&query=vs&includeAll=&exclude=&include=&exact=&searchdate=all&media=0&sortBy=date&articleid={1}&referrerAllArticles=true'.format(
-        club_id, str(post_id))
-    try:
-        html = requests.get(url, headers=headers).text
-        bs = BeautifulSoup(html, 'lxml')
-        temp = bs.find('td', class_='p-nick').find('a').get('onclick')
-    except Exception:
-        driver.get(url)
-        driver.implicitly_wait(3)
-        driver.switch_to.frame(driver.find_element_by_id('cafe_main'))
-        bs = BeautifulSoup(driver.page_source, 'lxml')
-        temp = bs.find('td', class_='p-nick').find('a').get('onclick')
-
-    # 작성자 정보
-    result['author_id'] = temp.split(',')[1].replace("'", '').strip()
-    result['nickname'] = temp.split(',')[3].replace("'", '').strip()
-
-    # 블랙리스트 포함 여부 확인
-    if result['author_id'] in blacklist:
-        result['ok'] = 'error'
-        return result
-
-    # 글 정보 (제목 & 카테고리, 작성시간)
-    temp2 = bs.find('div', class_='tit-box').find_all('table')
-    result['title'] = temp2[0].find('span', class_='b m-tcol-c').get_text().strip()
-    result['category'] = temp2[0].find('a', class_='m-tcol-c').get_text().strip()
-    result['time'] = temp2[1].find('td', class_='date').get_text().strip()
-
-    # 글 내용
-    result['url'] = cafe_url + '/' + str(post_id)
-    result['content'] = bs.find('div', class_='tbody m-tcol-c').get_text().replace('\xa0', '').strip()
-
-    # 댓글 수집
-    result['comments'] = get_comments([result['url'], club_id, post_id])
-
-    # 기타 수집용 정보
-    result['timestamp'] = str(_get_now_time())
-    result['ok'] = 'success'
-
-    return result
 
 
 def get_comments(url, club_id, post_id):
@@ -237,7 +242,7 @@ def get_comments(url, club_id, post_id):
                 continue
             if comment['articleWriter']:
                 continue
-            temp_comment['author_id'] = comment['writerid'] + '@naver.com'
+            temp_comment['author_id'] = comment['writerid']
             temp_comment['time'] = comment['writedt']
             temp_comment['comment'] = comment['content']
             comment_list.append(temp_comment)
@@ -247,12 +252,73 @@ def get_comments(url, club_id, post_id):
     return all_comment
 
 
+def get_post_info(cafe_url, club_id, post_id, blacklist=None):
+    result = dict()
+    url = 'https://cafe.naver.com/ArticleRead.nhn?clubid={0}&page=10&userDisplay=50&inCafeSearch=true&searchBy=1&query=vs&includeAll=&exclude=&include=&exact=&searchdate=all&media=0&sortBy=date&articleid={1}&referrerAllArticles=true'.format(
+        club_id, str(post_id))
+    try:
+        html = requests.get(url, headers=headers).text
+        bs = BeautifulSoup(html, 'lxml')
+        temp = bs.find('td', class_='p-nick').find('a').get('onclick')
+    except Exception:
+        driver.get(url)
+        driver.implicitly_wait(3)
+        driver.switch_to.frame(driver.find_element_by_id('cafe_main'))
+        bs = BeautifulSoup(driver.page_source, 'lxml')
+        temp = bs.find('td', class_='p-nick').find('a').get('onclick')
+
+    # 작성자 정보
+    result['author_id'] = temp.split(',')[1].replace("'", '').strip()
+    result['nickname'] = temp.split(',')[3].replace("'", '').strip()
+
+    # 블랙리스트 포함 여부 확인
+    if result['author_id'] in blacklist:
+        result['ok'] = 'error'
+        return result
+
+    # 글 정보 (제목 & 카테고리, 작성시간)
+    temp2 = bs.find('div', class_='tit-box').find_all('table')
+    result['title'] = temp2[0].find('span', class_='b m-tcol-c').get_text().strip()
+    result['category'] = temp2[0].find('a', class_='m-tcol-c').get_text().strip()
+    result['time'] = temp2[1].find('td', class_='date').get_text().strip()
+
+    # 글 내용
+    result['url'] = cafe_url + '/' + str(post_id)
+    result['content'] = bs.find('div', class_='tbody m-tcol-c').get_text().replace('\xa0', '').strip()
+
+    # 댓글 수집
+    result['comments'] = get_comments(result['url'], club_id, post_id)
+    result['comment_counts'] = len(result['comments'])
+
+    # 기타 수집용 정보
+    result['timestamp'] = str(_get_now_time())
+    result['ok'] = 'success'
+
+    return result
+
+
+def _get_history(club_id):
+    file_name = './history/{0}.json'.format(club_id)
+    try:
+        with open(file_name, 'r') as f:
+            return json.loads(f.read())
+    except:
+        return list()
+
+
+def _make_history(club_id, post_ids):
+    file_name = './history/{0}.json'.format(club_id)
+    with open(file_name, 'w') as f:
+        json.dump(post_ids, f)
+
+
 if __name__ == '__main__':
     if not os.path.exists('./setting'):
         os.mkdir('./setting')
-
     if not os.path.exists('./result'):
         os.mkdir('./result')
+    if not os.path.exists('./history'):
+        os.mkdir('./history')
 
     # LOGGER
     logger = logging.getLogger('notice')
@@ -262,25 +328,24 @@ if __name__ == '__main__':
     streamHandler.setFormatter(formatter)
     logger.addHandler(streamHandler)
 
-    input_data.append({'excel_name': 'playbattlegrounds',
-                       'url': 'https://cafe.naver.com/playbattlegrounds',
-                       'id': 'rlaaudgu2',
-                       'pw': 'kimh1785*',
-                       'keywords': ['vss', '콜옵'],
-                       'blacklist': ['mb_sundo']})
+    load_setting()
 
     # Main loop
     for data in input_data:
         result_data = list()
+        post_ids_list = list()
 
         login(data['id'], data['pw'])
         club_id = get_club_id(data['url'])
         logger.info('[SYSTEM] 현재 cafe : {}'.format(data['url']))
+        history = _get_history(club_id)
+        logger.info('[SYSTEM] History 로딩 완료.')
 
         for keyword in data['keywords']:
             logger.info('[SYSTEM] 게시글 목록 수집 시작.')
             page_len = get_page_len(club_id, keyword)
-            post_ids = get_post_ids(club_id, keyword, page_len)
+            post_ids = get_post_ids(club_id, keyword, page_len, history)
+            post_ids_list.extend(post_ids)
 
             logger.info('[SYSTEM] 게시글 상세 데이터 수집 시작.')
             for post_id in tqdm(post_ids):
@@ -290,3 +355,6 @@ if __name__ == '__main__':
                     continue
 
         make_excel(result_data, data['excel_name'])
+        _make_history(club_id, post_ids_list.extend(history))
+
+    driver.quit()
