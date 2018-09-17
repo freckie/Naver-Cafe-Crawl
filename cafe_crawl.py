@@ -9,7 +9,7 @@ import logging.handlers
 
 from pprint import pprint
 from tqdm import tqdm
-from openpyxl import Workbook
+from openpyxl import *
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.common.exceptions import UnexpectedAlertPresentException
@@ -83,7 +83,7 @@ def _get_now_time():
     return s
 
 
-def make_excel(data, file_name):
+def set_excel(file_name):
     now_time = time.strftime('%Y%m%d%H%M%S', time.localtime())
     FILENAME = './result/{0}_{1}.xlsx'.format(now_time, file_name)
     wb = Workbook()
@@ -99,6 +99,13 @@ def make_excel(data, file_name):
     ws.column_dimensions['H'].width = 20
     ws.column_dimensions['I'].width = 20
     ws.append(header)
+    wb.save(FILENAME)
+    return FILENAME
+
+
+def make_excel(data, FILENAME):
+    wb = load_workbook(FILENAME)
+    ws = wb.worksheets[0]
 
     for iter in data:
         if iter['ok'] == 'error':
@@ -113,7 +120,6 @@ def make_excel(data, file_name):
                 ws.append(temp_list2)
 
     wb.save(FILENAME)
-    logger.info('[COMPLETE] {} 엑셀 파일 생성 완료.'.format(file_name))
 
 
 def login(id, pw):
@@ -191,7 +197,7 @@ def get_page_len(club_id, keyword, count=1):
 def get_posts(club_id, keyword, pages, history_ids=list()):
     result = list()
 
-    for page in range(1, pages + 1):
+    for page in tqdm(range(1, pages + 1)):
         # 검색
         encoded_keyword = str(str(keyword).encode('euc-kr'))[1:].replace('\\x', '%')
         url = 'https://cafe.naver.com/ArticleSearchList.nhn?search.clubid={0}&search.searchdate=all&search.searchBy=1&search.query={1}&search.sortBy=date&userDisplay=50&search.media=0&search.option=0&search.page={2}'.format(club_id, encoded_keyword, str(page))
@@ -210,6 +216,8 @@ def get_posts(club_id, keyword, pages, history_ids=list()):
                 temp = tr.find('td', class_='p-nick').find('a').get('onclick')
                 temp_dict['author_id'] = temp.split(',')[1].replace("'", '').strip()
                 temp_dict['nickname'] = temp.split(',')[3].replace("'", '').strip()
+                if temp_dict['title'][0] == '=':
+                    temp_dict['title'][0] = ''
 
                 if temp_dict['post_id'] in history_ids:
                     continue
@@ -302,7 +310,7 @@ def get_comments(url, club_id, post_id):
                 continue
             temp_comment['nickname'] = comment['writernick']
             temp_comment['time'] = comment['writedt']
-            temp_comment['comment'] = comment['content']
+            temp_comment['comment'] = comment['content'].replace('=', '')
             comment_list.append(temp_comment)
 
     url_dict['comments'] = comment_list
@@ -356,13 +364,16 @@ def get_post_info(cafe_url, club_id, post, blacklist=None):
 
     # 글 정보 (제목 & 카테고리, 작성시간)
     temp2 = bs.find('div', class_='tit-box').find_all('table')
-    result['title'] = temp2[0].find('span', class_='b m-tcol-c').get_text().strip()
+    result['title'] = temp2[0].find('span', class_='b m-tcol-c').get_text().replace('=', '').strip()
     result['category'] = temp2[0].find('a', class_='m-tcol-c').get_text().strip()
     result['time'] = temp2[1].find('td', class_='date').get_text().strip()
 
     # 글 내용
     result['url'] = cafe_url + '/' + str(post['post_id'])
-    result['content'] = bs.find('div', class_='tbody m-tcol-c').get_text().replace('\xa0', '').strip()
+    if bs.find('div', class_='trading_area') is not None:
+        result['content'] = ''
+    else:
+        result['content'] = bs.find('div', class_='tbody m-tcol-c').get_text().replace('\xa0', '').replace('=', '').strip()
 
     # 댓글 수집
     result['comments'] = get_comments(result['url'], club_id, post['post_id'])
@@ -421,11 +432,17 @@ if __name__ == '__main__':
             logger.info('[SYSTEM] 현재 {}번째 cafe : {}'.format(idx, data['url']))
             history = _get_history(club_id)
             logger.info('[SYSTEM] History 로딩 완료.')
+            excel_name = set_excel(data['excel_name'])
+            logger.info('[SYSTEM] 엑셀 파일 설정 완료.')
 
             for keyword in data['keywords']:
+                result_data.clear()
                 logger.info('[SYSTEM] 게시글 목록 수집 시작.')
                 try:
                     page_len = get_page_len(club_id, keyword)
+                    if page_len > 10:
+                        page_len = 10
+                    logger.info('[SYSTEM] 검색 페이지 수 : {}'.format(str(page_len)))
                     posts = get_posts(club_id, keyword, page_len, history)
                     post_id_list = list()
                     for post in posts:
@@ -435,13 +452,21 @@ if __name__ == '__main__':
                     logger.info('[ERROR] 게시글 목록 수집 중 에러 : ' + str(exc))
 
                 logger.info('[SYSTEM] 게시글 상세 데이터 수집 시작.')
+                cnt = 0
                 for post in tqdm(posts):
+                    if cnt > 50:
+                        make_excel(result_data, excel_name)
+                        result_data.clear()
+                        cnt = 0
+
                     try:
-                        result_data.append(get_post_info(data['url'], club_id, post, blacklist=blacklist))
+                        cnt += 1
+                        post_temp = get_post_info(data['url'], club_id, post, blacklist=blacklist)
+                        result_data.append(post_temp)
                     except:
                         continue
+                make_excel(result_data, excel_name)
 
-            make_excel(result_data, data['excel_name'])
             logger.info('[SYSTEM] 엑셀 파일 생성 완료.')
             posts_list.extend(history)
             _make_history(club_id, posts_list)
