@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import json
 import shutil
@@ -112,12 +113,19 @@ def make_excel(data, FILENAME):
             continue
         email = '{}@naver.com'.format(iter['author_id'])
         temp_list = [email, iter['nickname'], '본문', iter['category'], iter['title'], iter['content'], iter['url'], iter['time'], iter['timestamp']]
-        ws.append(temp_list)
+        try:
+            ws.append(temp_list)
+        except:
+            ws.append([email, iter['nickname'], '본문', iter['category'], '', '', iter['url'], iter['time'], iter['timestamp']])
         if iter['comment_counts'] > 0:
             for comm in iter['comments']:
                 email2 = '{}@naver.com'.format(comm['author_id'])
-                temp_list2 = [email2, comm['nickname'], '', iter['category'], iter['title'], comm['comment'], iter['url'], comm['time'], iter['timestamp']]
-                ws.append(temp_list2)
+                try:
+                    temp_list2 = [email2, comm['nickname'], '', iter['category'], iter['title'], comm['comment'], iter['url'], comm['time'], iter['timestamp']]
+                    ws.append(temp_list2)
+                except:
+                    temp_list2 = [email2, comm['nickname'], '', iter['category'], '', '', iter['url'], comm['time'], iter['timestamp']]
+                    ws.append(temp_list2)
 
     wb.save(FILENAME)
 
@@ -285,6 +293,7 @@ def get_comments(url, club_id, post_id):
         logger.info("[PASS] ({}) {}".format(url.strip(), alert.text))
         alert.accept()
         driver.implicitly_wait(3)
+        time.sleep(2)
         return list()
 
     # Get comment
@@ -351,6 +360,7 @@ def get_post_info(cafe_url, club_id, post, blacklist=None):
             logger.info("[PASS] ({}) {}".format(url.strip(), alert.text))
             alert.accept()
             driver.implicitly_wait(3)
+            time.sleep(2)
             return {'ok': 'error'}
 
     # 작성자 정보
@@ -422,57 +432,65 @@ if __name__ == '__main__':
 
     # Main loop
     idx = 1
+    result_data = list()
+    posts_list = list()
     for data in input_data:
-        try:
-            result_data = list()
-            posts_list = list()
+        #try:
+        result_data.clear()
+        posts_list.clear()
 
-            login(data['id'], data['pw'])
-            club_id = get_club_id(data['url'])
-            logger.info('[SYSTEM] 현재 {}번째 cafe : {}'.format(idx, data['url']))
-            history = _get_history(club_id)
-            logger.info('[SYSTEM] History 로딩 완료.')
-            excel_name = set_excel(data['excel_name'])
-            logger.info('[SYSTEM] 엑셀 파일 설정 완료.')
+        login(data['id'], data['pw'])
+        club_id = get_club_id(data['url'])
+        logger.info('[SYSTEM] 현재 {}번째 cafe : {}'.format(idx, data['url']))
+        history = _get_history(club_id)
+        logger.info('[SYSTEM] History 로딩 완료.')
+        excel_name = set_excel(data['excel_name'])
+        logger.info('[SYSTEM] 엑셀 파일 설정 완료.')
 
-            for keyword in data['keywords']:
-                result_data.clear()
-                logger.info('[SYSTEM] 게시글 목록 수집 시작.')
+        for keyword in data['keywords']:
+            result_data.clear()
+            logger.info('[SYSTEM] 게시글 목록 수집 시작.')
+            try:
+                page_len = get_page_len(club_id, keyword)
+                if page_len > 10:
+                    page_len = 10
+                logger.info('[SYSTEM] 검색 페이지 수 : {}'.format(str(page_len)))
+                posts = get_posts(club_id, keyword, page_len, history)
+                post_id_list = list()
+                for post in posts:
+                    post_id_list.append(post['post_id'])
+                posts_list.extend(post_id_list)
+            except Exception as exc:
+                logger.info('[ERROR] 게시글 목록 수집 중 에러 : ' + str(exc))
+
+            logger.info('[SYSTEM] 게시글 상세 데이터 수집 시작.')
+            cnt = 0
+            for post in tqdm(posts):
+                if cnt > 50:
+                    make_excel(result_data, excel_name)
+                    result_data.clear()
+                    cnt = 0
                 try:
-                    page_len = get_page_len(club_id, keyword)
-                    if page_len > 10:
-                        page_len = 10
-                    logger.info('[SYSTEM] 검색 페이지 수 : {}'.format(str(page_len)))
-                    posts = get_posts(club_id, keyword, page_len, history)
-                    post_id_list = list()
-                    for post in posts:
-                        post_id_list.append(post['post_id'])
-                    posts_list.extend(post_id_list)
+                    cnt += 1
+                    post_temp = get_post_info(data['url'], club_id, post, blacklist=blacklist)
+                    result_data.append(post_temp)
+                except UnexpectedAlertPresentException:
+                    alert = driver.switch_to.alert()
+                    alert.accept()
+                    driver.implicitly_wait(3)
+                    time.sleep(2)
+                    continue
                 except Exception as exc:
-                    logger.info('[ERROR] 게시글 목록 수집 중 에러 : ' + str(exc))
-
-                logger.info('[SYSTEM] 게시글 상세 데이터 수집 시작.')
-                cnt = 0
-                for post in tqdm(posts):
-                    if cnt > 50:
-                        make_excel(result_data, excel_name)
-                        result_data.clear()
-                        cnt = 0
-
-                    try:
-                        cnt += 1
-                        post_temp = get_post_info(data['url'], club_id, post, blacklist=blacklist)
-                        result_data.append(post_temp)
-                    except:
-                        continue
-                make_excel(result_data, excel_name)
-
-            logger.info('[SYSTEM] 엑셀 파일 생성 완료.')
-            posts_list.extend(history)
-            _make_history(club_id, posts_list)
-            logger.info('[SYSTEM] 히스토리 파일 생성 완료.')
-        except Exception as exc:
-            logger.info('[ERROR] unknown error. : ' + str(exc))
+                    logger.info('[ERROR] 게시글 내용 수집 중 에러 : ' + str(exc))
+                    continue
+            make_excel(result_data, excel_name)
+            result_data.clear()
+        logger.info('[SYSTEM] 엑셀 파일 생성 완료.')
+        posts_list.extend(history)
+        _make_history(club_id, posts_list)
+        logger.info('[SYSTEM] 히스토리 파일 생성 완료.')
+        # except Exception as exc:
+        #     logger.info('[ERROR] unknown error. : ' + str(exc))
 
         idx += 1
 
