@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import time
 import json
 import shutil
@@ -17,10 +18,10 @@ from selenium.common.exceptions import UnexpectedAlertPresentException
 
 
 # 전역변수
+root_dir = ''
 headers = {'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36'}
-driver_loc = './chromedriver.exe'
+driver_loc = '/chromedriver.exe'
 input_data = list()
-driver = webdriver.Chrome(driver_loc)
 blacklist = list()
 
 
@@ -34,7 +35,7 @@ def alert(a, b):
 
 
 def load_setting():
-    path_dir = './setting'
+    path_dir = root_dir + '/setting'
     file_list = os.listdir(path_dir)
     file_list.sort()
 
@@ -86,7 +87,7 @@ def _get_now_time():
 
 def set_excel(file_name):
     now_time = time.strftime('%Y%m%d%H%M%S', time.localtime())
-    FILENAME = './result/{0}_{1}.xlsx'.format(now_time, file_name)
+    FILENAME = root_dir + '/result/{0}_{1}.xlsx'.format(now_time, file_name)
     wb = Workbook()
     ws = wb.worksheets[0]
     header = ['작성자', '닉네임', '본문/댓글', '카테고리명', '제목명', '내용', '게시글 URL', '작성 시각', '수집 시각']
@@ -397,7 +398,7 @@ def get_post_info(cafe_url, club_id, post, blacklist=None):
 
 
 def _get_history(club_id):
-    file_name = './history/{0}.json'.format(club_id)
+    file_name = root_dir + '/history/{0}.json'.format(club_id)
     try:
         with open(file_name, 'r') as f:
             return json.loads(f.read())
@@ -406,18 +407,26 @@ def _get_history(club_id):
 
 
 def _make_history(club_id, post_ids):
-    file_name = './history/{0}.json'.format(club_id)
+    file_name = root_dir + '/history/{0}.json'.format(club_id)
     with open(file_name, 'w') as f:
         json.dump(post_ids, f)
 
 
 if __name__ == '__main__':
-    if not os.path.exists('./setting'):
-        os.mkdir('./setting')
-    if not os.path.exists('./result'):
-        os.mkdir('./result')
-    if not os.path.exists('./history'):
-        os.mkdir('./history')
+    if len(sys.argv) > 1:
+        root_dir = sys.argv[1]
+    else:
+        root_dir = '.'
+
+    if not os.path.exists(root_dir + '/setting'):
+        os.mkdir(root_dir + '/setting')
+    if not os.path.exists(root_dir + '/result'):
+        os.mkdir(root_dir + '/result')
+    if not os.path.exists(root_dir + '/history'):
+        os.mkdir(root_dir + '/history')
+
+    driver_loc = root_dir + '/chromedriver.exe'
+    driver = webdriver.Chrome(driver_loc)
 
     # LOGGER
     logger = logging.getLogger('notice')
@@ -427,6 +436,10 @@ if __name__ == '__main__':
     streamHandler.setFormatter(formatter)
     logger.addHandler(streamHandler)
 
+    # DEBUG
+    logger.info('[SYSTEM] 파일 경로 : ' + str(root_dir))
+    logger.info('[SYSTEM] 드라이버 경로 : ' + str(driver_loc))
+
     # Load Setting
     load_setting()
 
@@ -435,7 +448,6 @@ if __name__ == '__main__':
     result_data = list()
     posts_list = list()
     for data in input_data:
-        #try:
         result_data.clear()
         posts_list.clear()
 
@@ -452,8 +464,8 @@ if __name__ == '__main__':
             logger.info('[SYSTEM] 게시글 목록 수집 시작.')
             try:
                 page_len = get_page_len(club_id, keyword)
-                if page_len > 10:
-                    page_len = 10
+                # if page_len > 10:
+                #     page_len = 10
                 logger.info('[SYSTEM] 검색 페이지 수 : {}'.format(str(page_len)))
                 posts = get_posts(club_id, keyword, page_len, history)
                 post_id_list = list()
@@ -489,8 +501,6 @@ if __name__ == '__main__':
         posts_list.extend(history)
         _make_history(club_id, posts_list)
         logger.info('[SYSTEM] 히스토리 파일 생성 완료.')
-        # except Exception as exc:
-        #     logger.info('[ERROR] unknown error. : ' + str(exc))
 
         idx += 1
 
