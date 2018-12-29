@@ -1,0 +1,10 @@
+# url
+https://cafe.naver.com/~~~
+# id / pw (띄어쓰기로 구분)
+~~ ~
+# keyword (줄로 구분)
+~~
+# excel 파일 이름
+~~
+# 전체 글 수집이면 True, 키워드 검색이면 False
+False

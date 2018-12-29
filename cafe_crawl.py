@@ -6,6 +6,7 @@ import json
 import shutil
 import winsound
 import requests
+import configparser
 import urllib.parse
 import logging.handlers
 
@@ -16,17 +17,29 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.common.exceptions import UnexpectedAlertPresentException
 
+from pattern_search import pat_transform, pat_find, pat_check
+
 
 # 전역변수
 root_dir = ''
+setting_dir = ''
 headers = {'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36'}
 driver_loc = '/chromedriver.exe'
 input_data = list()
 blacklist = list()
+conf = {
+    'max_try': 50,   # 로그인 최대 시도 횟수. (0이면 바로 수동로그인)
+    'alert': 3,     # 비프음 횟수. (0이면 비프 알림 없음)
+    'max_page': 0   # 각 url당 수집할 최대 페이지. (0이면 모두 수집)
+}
+ban_list = {
+    'main': list(), # 본문 수집 제외 문구 리스트
+    'comment': list()   # 댓글 수집 제외 문구 리스트
+}
 
 
 def alert(a, b):
-    for i in range(1, 6):
+    for i in range(1, conf['alert'] + 1):
         winsound.Beep(a, 500)
         winsound.Beep(b, 500)
         winsound.Beep(a, 500)
@@ -39,14 +52,35 @@ def load_setting():
     file_list = os.listdir(path_dir)
     file_list.sort()
 
+    # 수집 제외 문구 리스트 ( 본문 )
+    with open(setting_dir + '/ban_list_main.txt', 'r') as bf:
+        for line in bf.readlines():
+            ban_list['main'].append(pat_transform(line.strip()))
+
+    # 수집 제외 문구 리스트 ( 댓글 )
+    with open(setting_dir + '/ban_list_comment.txt', 'r') as bf:
+        for line in bf.readlines():
+            ban_list['comment'].append(pat_transform(line.strip()))
+
+    # 블랙 리스트
+    with open(setting_dir + '/blacklist.txt', 'r') as bf:
+        for line in bf.readlines():
+            blacklist.append(line.strip().replace('@naver.com', ''))
+    
+    # 프로그램 세팅 파일
+    with open(setting_dir + '/program_setting.txt', 'r') as bf:
+        config = configparser.ConfigParser()
+        config.read(setting_dir + '/program_setting.txt')
+        conf['max_try'] = int(config['LOGIN']['MAX_TRY'])
+        conf['alert'] = int(config['LOGIN']['BEEP_ALERT'])
+        conf['max_page'] = int(config['PROGRAM']['MAX_PAGE'])
+        logger.info('[SETTING] 로그인 최대 시도 횟수 : {}'.format(conf['max_try']))
+        logger.info('[SETTING] 자동 로그인 실패 시 알림 횟수 : {}'.format(conf['alert']))
+        logger.info('[SETTING] 각 카페 당 최대 수집 페이지 수 : {}'.format(conf['max_page']))
+
+
     for iter in file_list:
         file_name = '{0}/{1}'.format(path_dir, iter)
-
-        if 'blacklist' in iter:
-            with open(file_name, 'r') as f:
-                for line in f.readlines():
-                    blacklist.append(line.strip().replace('@naver.com', ''))
-            continue
 
         with open(file_name, 'r') as f:
             temp_dict = {'keywords': list()}
@@ -63,6 +97,8 @@ def load_setting():
                         now = 'keyword'
                     elif 'excel' in line.strip():
                         now = 'excel'
+                    elif '전체' in line.strip():
+                        now = 'all_crawl'
                 else:
                     if line.strip() == '':
                         continue
@@ -76,6 +112,12 @@ def load_setting():
                         temp_dict['keywords'].append(line.strip())
                     elif now == 'excel':
                         temp_dict['excel_name'] = line.strip()
+                    elif now == 'all_crawl':
+                        string = line.strip()
+                        if string in ['True', 'true']:
+                            temp_dict['all_crawl'] = True
+                        else:
+                            temp_dict['all_crawl'] = False
             input_data.append(temp_dict)
 
 
@@ -132,31 +174,44 @@ def make_excel(data, FILENAME):
 
 
 def login(id, pw):
-    logger.info("[ATTEMPT] 로그인 시도 중...")
-    for i in tqdm(range(1, 51)):
+    # MAX_TRY == 0일 경우 바로 수동 로그인
+    if conf['max_try'] == 0:
         driver.get('https://nid.naver.com/nidlogin.login')
         driver.implicitly_wait(3)
-        driver.find_element_by_xpath('//*[@id="id"]').send_keys(id.strip())
-        driver.implicitly_wait(3)
-        driver.find_element_by_xpath('//*[@id="pw"]').send_keys(pw.strip())
-        driver.implicitly_wait(3)
-        driver.find_element_by_xpath('//*[@id="frmNIDLogin"]/fieldset/input').click()
-        driver.implicitly_wait(3)
-
-        if driver.current_url == 'https://www.naver.com/':
-            break
-
-    if driver.current_url == 'https://www.naver.com/':
-        logger.info("[COMPLETE] 로그인 성공")
-    else:
         alert(700, 550)
-        logger.info("[DEBUG] 직접 로그인해주세요...")
+        logger.info('[LOGIN] 직접 로그인 해주세요.')
         while True:
             login_chk = input('완료 시 입력하세요 (완료: 1) :: ')
             if login_chk == '1':
                 break
             else:
-                logger.info("[DEBUG] 다시 입력해주세요...")
+                logger.info("[LOGIN] 다시 입력해주세요.")
+    else:
+        logger.info("[ATTEMPT] 로그인 시도 중...")
+        for i in tqdm(range(1, conf['max_try'] + 1)):
+            driver.get('https://nid.naver.com/nidlogin.login')
+            driver.implicitly_wait(3)
+            driver.find_element_by_xpath('//*[@id="id"]').send_keys(id.strip())
+            driver.implicitly_wait(3)
+            driver.find_element_by_xpath('//*[@id="pw"]').send_keys(pw.strip())
+            driver.implicitly_wait(3)
+            driver.find_element_by_xpath('//*[@id="frmNIDLogin"]/fieldset/input').click()
+            driver.implicitly_wait(3)
+
+            if driver.current_url == 'https://www.naver.com/':
+                break
+
+        if driver.current_url == 'https://www.naver.com/':
+            logger.info("[COMPLETE] 로그인 성공")
+        else:
+            logger.info("[DEBUG] 직접 로그인해주세요...")
+            alert(700, 550)
+            while True:
+                login_chk = input('완료 시 입력하세요 (완료: 1) :: ')
+                if login_chk == '1':
+                    break
+                else:
+                    logger.info("[DEBUG] 다시 입력해주세요...")
 
 
 def get_club_id(cafe_url):
@@ -165,13 +220,23 @@ def get_club_id(cafe_url):
     return str(bs.find('input', {'name': 'clubid'})['value'])
 
 
-def get_page_len(club_id, keyword, count=1):
+def get_page_len(club_id, keyword, count=1, crawl_all=False, cafe_url=''):
     page_len = count
 
+    # 페이지 제한 있을 경우 페이지 넘으면 리턴
+    if (conf['max_page'] != 0) and (page_len > conf['max_page']):
+        return conf['max_page']
+
+    # 전체글 보기 url 설정
+    if crawl_all:
+        url = cafe_url + '?iframe_url=/ArticleList.nhn%3Fsearch.clubid={}%26search.boardtype=L%26search.page={}&userDisplay=50'.format(club_id, str(page_len))
+    # 키워드 검색 url 설정
+    else:
+        encoded_keyword = str(str(keyword).encode('euc-kr'))[1:].replace('\\x', '%')
+        url = 'https://cafe.naver.com/ArticleSearchList.nhn?search.clubid={0}&search.searchdate=all&search.searchBy=1&search.query={1}&search.sortBy=date&userDisplay=50&search.media=0&search.option=0&search.page={2}'.format(
+            club_id, encoded_keyword, str(page_len))
+
     # 검색
-    encoded_keyword = str(str(keyword).encode('euc-kr'))[1:].replace('\\x', '%')
-    url = 'https://cafe.naver.com/ArticleSearchList.nhn?search.clubid={0}&search.searchdate=all&search.searchBy=1&search.query={1}&search.sortBy=date&userDisplay=50&search.media=0&search.option=0&search.page={2}'.format(
-        club_id, encoded_keyword, str(page_len))
     driver.get(url)
     driver.implicitly_wait(3)
     driver.switch_to.frame(driver.find_element_by_id('cafe_main'))
@@ -186,7 +251,7 @@ def get_page_len(club_id, keyword, count=1):
                 if 'pgL' in td['class']:
                     continue
                 elif 'pgR' in td['class']:
-                    page_len = get_page_len(club_id, keyword, page_len + 1)
+                    page_len = get_page_len(club_id, keyword, count=page_len + 1, crawl_all=crawl_all, cafe_url=cafe_url)
             else:
                 page_len += 1
     except AttributeError:
@@ -196,20 +261,26 @@ def get_page_len(club_id, keyword, count=1):
                 if 'pgL' in td['class']:
                     continue
                 elif 'pgR' in td['class']:
-                    page_len = get_page_len(club_id, keyword, page_len + 1)
+                    page_len = get_page_len(club_id, keyword, count=page_len + 1, crawl_all=crawl_all, cafe_url=cafe_url)
             else:
                 page_len += 1
 
     return page_len
 
 
-def get_posts(club_id, keyword, pages, history_ids=list()):
+def get_posts(club_id, keyword, pages, history_ids=list(), crawl_all=False, cafe_url=''):
     result = list()
 
     for page in tqdm(range(1, pages + 1)):
+        # 전체 글 보기
+        if crawl_all:
+            url = cafe_url + '?iframe_url=/ArticleList.nhn%3Fsearch.clubid={}%26search.boardtype=L%26search.page={}&userDisplay=50'.format(club_id, page)
+        # 키워드 검색 url
+        else:
+            encoded_keyword = str(str(keyword).encode('euc-kr'))[1:].replace('\\x', '%')
+            url = 'https://cafe.naver.com/ArticleSearchList.nhn?search.clubid={0}&search.searchdate=all&search.searchBy=1&search.query={1}&search.sortBy=date&userDisplay=50&search.media=0&search.option=0&search.page={2}'.format(club_id, encoded_keyword, str(page))
+
         # 검색
-        encoded_keyword = str(str(keyword).encode('euc-kr'))[1:].replace('\\x', '%')
-        url = 'https://cafe.naver.com/ArticleSearchList.nhn?search.clubid={0}&search.searchdate=all&search.searchBy=1&search.query={1}&search.sortBy=date&userDisplay=50&search.media=0&search.option=0&search.page={2}'.format(club_id, encoded_keyword, str(page))
         driver.get(url)
         driver.implicitly_wait(3)
         driver.switch_to.frame(driver.find_element_by_id('cafe_main'))
@@ -245,7 +316,7 @@ def get_posts(club_id, keyword, pages, history_ids=list()):
                 temp = tr.find('td', class_='p-nick').find('a').get('onclick')
                 temp_dict['author_id'] = temp.split(',')[1].replace("'", '').strip()
                 temp_dict['nickname'] = temp.split(',')[3].replace("'", '').strip()
-                temp_dict['post_id'] = str(tr.find('a', class_='article')['href'].split('&')[13].replace('articleid=', ''))
+                temp_dict['post_id'] = re.search('articleid=[0-9]+', tr.find('a', class_='article')['href']).group().replace('articleid=', '')
 
                 if temp_dict['post_id'] in history_ids:
                     continue
@@ -290,7 +361,7 @@ def get_comments(url, club_id, post_id):
                 'https://cafe.naver.com/CommentView.nhn?search.page={}&'.format(num) + article_attr)
 
     except UnexpectedAlertPresentException:
-        alert = driver.switch_to.alert()
+        alert = driver.switch_to_alert()
         logger.info("[PASS] ({}) {}".format(url.strip(), alert.text))
         alert.accept()
         driver.implicitly_wait(3)
@@ -321,6 +392,10 @@ def get_comments(url, club_id, post_id):
             temp_comment['nickname'] = comment['writernick']
             temp_comment['time'] = comment['writedt']
             temp_comment['comment'] = comment['content'].replace('=', '')
+
+            # 수집 제외 문구 있을 경우 무시
+            if pat_check(ban_list['comment'], temp_comment['comment']):
+                continue
             comment_list.append(temp_comment)
 
     url_dict['comments'] = comment_list
@@ -357,7 +432,7 @@ def get_post_info(cafe_url, club_id, post, blacklist=None):
                 result['ok'] = 'success'
                 return result
         except UnexpectedAlertPresentException:
-            alert = driver.switch_to.alert()
+            alert = driver.switch_to_alert()
             logger.info("[PASS] ({}) {}".format(url.strip(), alert.text))
             alert.accept()
             driver.implicitly_wait(3)
@@ -386,6 +461,10 @@ def get_post_info(cafe_url, club_id, post, blacklist=None):
     else:
         result['content'] = bs.find('div', class_='tbody m-tcol-c').get_text().replace('\xa0', '').replace('=', '').strip()
 
+    # 글 내용에 수집 제외 문구 있으면 False 리턴
+    if pat_check(ban_list['main'], result['content']):
+        return False
+
     # 댓글 수집
     result['comments'] = get_comments(result['url'], club_id, post['post_id'])
     result['comment_counts'] = len(result['comments'])
@@ -413,10 +492,12 @@ def _make_history(club_id, post_ids):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
+    if len(sys.argv) > 2:
         root_dir = sys.argv[1]
+        setting_dir = sys.argv[2]
     else:
         root_dir = '.'
+        setting_dir = '.'
 
     if not os.path.exists(root_dir + '/setting'):
         os.mkdir(root_dir + '/setting')
@@ -439,6 +520,10 @@ if __name__ == '__main__':
     # DEBUG
     logger.info('[SYSTEM] 파일 경로 : ' + str(root_dir))
     logger.info('[SYSTEM] 드라이버 경로 : ' + str(driver_loc))
+    logger.info('[SYSTEM] 수집 제외 문구 (본문) 파일 경로 : ' + str(setting_dir + '/ban_list_main.txt'))
+    logger.info('[SYSTEM] 수집 제외 문구 (댓글) 파일 경로 : ' + str(setting_dir + '/ban_list_comment.txt'))
+    logger.info('[SYSTEM] 블랙리스트 파일 경로 : ' + str(setting_dir + '/blacklist.txt'))
+    logger.info('[SYSTEM] 프로그램 세팅 파일 경로 : ' + str(setting_dir + '/program_setting.txt'))
 
     # Load Setting
     load_setting()
@@ -447,12 +532,25 @@ if __name__ == '__main__':
     idx = 1
     result_data = list()
     posts_list = list()
+    prev_id = ''
     for data in input_data:
         result_data.clear()
         posts_list.clear()
 
-        login(data['id'], data['pw'])
-        club_id = get_club_id(data['url'])
+        # 새로 로그인 할 아이디가 같다면
+        if prev_id != data['id']:
+            login(data['id'], data['pw'])
+            prev_id = data['id']
+        else:
+            prev_id = data['id']
+
+        try:
+            club_id = get_club_id(data['url'])
+        except Exception as exc:
+            try:
+                club_id = get_club_id(data['url'])
+            except Exception as exc:
+                logger.info('[SYSTEM] cafe 수집 불가 : {}'.format(data['url']))
         logger.info('[SYSTEM] 현재 {}번째 cafe : {}'.format(idx, data['url']))
         history = _get_history(club_id)
         logger.info('[SYSTEM] History 로딩 완료.')
@@ -463,13 +561,20 @@ if __name__ == '__main__':
             result_data.clear()
             logger.info('[SYSTEM] 게시글 목록 수집 시작.')
             try:
-                page_len = get_page_len(club_id, keyword)
-                # if page_len > 10:
-                #     page_len = 10
-                logger.info('[SYSTEM] 검색 페이지 수 : {}'.format(str(page_len)))
-                posts = get_posts(club_id, keyword, page_len, history)
+                page_len = get_page_len(club_id, keyword, crawl_all=data['all_crawl'], cafe_url=data['url'])
+                # 최대 페이지 수 확인
+                if conf['max_page'] == 0:
+                    logger.info('[SYSTEM] 검색 페이지 수 : {}'.format(str(page_len)))
+                else:
+                    if page_len > conf['max_page']:
+                        page_len = conf['max_page']
+                        logger.info('[SYSTEM] 검색 페이지 수 : {} (최대 페이지 제한)'.format(str(page_len)))
+                posts = get_posts(club_id, keyword, page_len, history, crawl_all=data['all_crawl'], cafe_url=data['url'])
                 post_id_list = list()
                 for post in posts:
+                    # 제목에 수집 제외 문구 포함되었으면 무시.
+                    if pat_check(ban_list['main'], post['title']):
+                        continue
                     post_id_list.append(post['post_id'])
                 posts_list.extend(post_id_list)
             except Exception as exc:
@@ -485,9 +590,11 @@ if __name__ == '__main__':
                 try:
                     cnt += 1
                     post_temp = get_post_info(data['url'], club_id, post, blacklist=blacklist)
+                    if post_temp == False:
+                        continue
                     result_data.append(post_temp)
                 except UnexpectedAlertPresentException:
-                    alert = driver.switch_to.alert()
+                    alert = driver.switch_to_alert()
                     alert.accept()
                     driver.implicitly_wait(3)
                     time.sleep(2)
