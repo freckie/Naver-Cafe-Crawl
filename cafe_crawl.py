@@ -215,9 +215,13 @@ def login(id, pw):
 
 
 def get_club_id(cafe_url):
-    html = requests.get(cafe_url, headers=headers).text
-    bs = BeautifulSoup(html, 'lxml')
+    driver.get(cafe_url)
+    driver.implicitly_wait(3)
+    bs = BeautifulSoup(driver.page_source, 'lxml')
     return str(bs.find('input', {'name': 'clubid'})['value'])
+    # html = requests.get(cafe_url, headers=headers).text
+    # bs = BeautifulSoup(html, 'lxml')
+    # return str(bs.find('input', {'name': 'clubid'})['value'])
 
 
 def get_page_len(club_id, keyword, count=1, crawl_all=False, cafe_url=''):
@@ -551,6 +555,8 @@ if __name__ == '__main__':
                 club_id = get_club_id(data['url'])
             except Exception as exc:
                 logger.info('[SYSTEM] cafe 수집 불가 : {}'.format(data['url']))
+                continue
+                
         logger.info('[SYSTEM] 현재 {}번째 cafe : {}'.format(idx, data['url']))
         history = _get_history(club_id)
         logger.info('[SYSTEM] History 로딩 완료.')
@@ -579,6 +585,7 @@ if __name__ == '__main__':
                 posts_list.extend(post_id_list)
             except Exception as exc:
                 logger.info('[ERROR] 게시글 목록 수집 중 에러 : ' + str(exc))
+                continue
 
             logger.info('[SYSTEM] 게시글 상세 데이터 수집 시작.')
             cnt = 0
